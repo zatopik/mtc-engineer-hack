@@ -1,0 +1,140 @@
+kind: DaemonSet
+
+image:
+  tag: v1.19.3-debian-elasticsearch7-1.1
+
+mountVarLogDirectory: true
+mountDockerContainersDirectory: false
+
+env:
+  - name: K8S_NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+
+volumes:
+  - name: fluentd-data
+    hostPath:
+      path: /var/log/fluentd
+      type: DirectoryOrCreate
+
+volumeMounts:
+  - name: fluentd-data
+    mountPath: /var/log/fluentd
+
+metrics:
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: prometheus
+
+dashboards:
+  enabled: false
+
+fileConfigs:
+  01_sources.conf: |-
+    <source>
+      @type tail
+      @id in_tail_container_logs
+      @label @KUBERNETES
+      path /var/log/containers/*.log
+      pos_file /var/log/fluentd-containers.log.pos
+      tag kubernetes.*
+      read_from_head true
+      emit_unmatched_lines true
+
+      <parse>
+        @type multi_format
+
+        <pattern>
+          format json
+          time_key time
+          time_type string
+          time_format "%Y-%m-%dT%H:%M:%S.%NZ"
+          keep_time_key false
+        </pattern>
+
+        <pattern>
+          format regexp
+          expression /^(?<time>.+) (?<stream>stdout|stderr)( (?<logtag>.))? (?<log>.*)$/
+          time_format "%Y-%m-%dT%H:%M:%S.%NZ"
+          keep_time_key false
+        </pattern>
+      </parse>
+    </source>
+
+    <source>
+      @type prometheus
+      bind 0.0.0.0
+      port 24231
+      metrics_path /metrics
+    </source>
+
+  02_filters.conf: |-
+    <label @KUBERNETES>
+
+      <filter kubernetes.**>
+        @type kubernetes_metadata
+        @id filter_kube_metadata
+        skip_labels false
+        skip_container_metadata false
+        skip_namespace_metadata false
+        skip_master_url true
+      </filter>
+
+        <filter kubernetes.**>
+          @type grep
+          <and>
+            <regexp>
+              key $.kubernetes.namespace_name
+              pattern /^demo$/
+            </regexp>
+            <regexp>
+              key $.kubernetes.labels.app
+              pattern /^nginx$/
+            </regexp>
+          </and>
+        </filter>
+
+      <match kubernetes.**>
+        @type relabel
+        @label @DISPATCH
+      </match>
+
+    </label>
+
+  03_dispatch.conf: |-
+    <label @DISPATCH>
+
+      <match **>
+        @type relabel
+        @label @OUTPUT
+      </match>
+
+    </label>
+
+  04_outputs.conf: |-
+    <label @OUTPUT>
+
+      <match **>
+        @type file
+        path /var/log/fluentd/demo/nginx
+        append true
+
+        <format>
+          @type json
+        </format>
+
+        <buffer>
+          @type file
+          path /var/log/fluentd/buffer
+          flush_mode interval
+          timekey 10s
+          timekey_wait 0s
+          flush_interval 5s
+          chunk_limit_size 1m
+          total_limit_size 100m
+        </buffer>
+      </match>
+
+    </label>

@@ -1,0 +1,9 @@
+*.log
+*.tmp
+.env
+.env.*
+kubeconfig
+*.key
+*.pem
+*.crt
+.DS_Store
